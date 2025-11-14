@@ -1,56 +1,55 @@
-from flask import Flask, render_template, request, send_file, jsonify
+
+import os, json, base64, zlib
+from flask import Flask, render_template, request, send_file, flash
 from PIL import Image
-import io, json, hashlib
+from io import BytesIO
 
-app = Flask(__name__)
+app=Flask(__name__)
+app.secret_key="xyz123"
 
-def pixel_codes(img):
-    w, h = img.size
-    pixels = img.load()
-    data=[]
-    for y in range(h):
-        for x in range(w):
-            r,g,b = pixels[x,y][:3]
-            code = f"X{x}Y{y}R{r}G{g}B{b}"
-            hcode = hashlib.sha256(code.encode()).hexdigest()
-            data.append({"x":x,"y":y,"r":r,"g":g,"b":b,"code":code,"hash":hcode})
-    return {"width":w,"height":h,"pixels":data}
+def encode_image(img):
+    px=list(img.getdata())
+    w,h=img.size
+    raw=json.dumps({"w":w,"h":h,"px":px}).encode()
+    comp=zlib.compress(raw,9)
+    return base64.b64encode(comp)
+
+def decode_image(data):
+    comp=base64.b64decode(data)
+    raw=zlib.decompress(comp)
+    obj=json.loads(raw.decode())
+    w,h=obj["w"],obj["h"]
+    img=Image.new("RGB",(w,h))
+    img.putdata([tuple(p) for p in obj["px"]])
+    return img
 
 @app.route("/")
-def index():
+def home():
     return render_template("index.html")
 
-@app.route("/encode", methods=["GET","POST"])
-def encode():
-    if request.method=="POST":
-        file=request.files["image"]
-        img=Image.open(file.stream).convert("RGBA")
-        data=pixel_codes(img)
-        buf=io.BytesIO()
-        buf.write(json.dumps(data).encode())
-        buf.seek(0)
-        return send_file(buf, as_attachment=True, download_name="pixel_codes.json", mimetype="application/json")
-    return render_template("encode.html")
+@app.route("/encode",methods=["POST"])
+def encode_route():
+    file=request.files.get("image")
+    if not file:
+        flash("No image uploaded"); return render_template("index.html")
+    img=Image.open(file).convert("RGB")
+    data=encode_image(img)
+    buf=BytesIO(); buf.write(data); buf.seek(0)
+    return send_file(buf,mimetype="text/plain",as_attachment=True,download_name="encoded.txt")
 
-@app.route("/decode", methods=["GET","POST"])
-def decode():
-    if request.method=="POST":
-        file=request.files["codes"]
-        data=json.load(file.stream)
-        w,h=data["width"], data["height"]
-        img=Image.new("RGBA",(w,h))
-        px=img.load()
-        for p in data["pixels"]:
-            px[p["x"],p["y"]] = (p["r"],p["g"],p["b"],255)
-        buf=io.BytesIO()
-        img.save(buf, format="PNG")
-        buf.seek(0)
-        return send_file(buf, as_attachment=True, download_name="reconstructed.png", mimetype="image/png")
-    return render_template("decode.html")
+@app.route("/decode",methods=["POST"])
+def decode_route():
+    file=request.files.get("codefile")
+    if not file:
+        flash("No file uploaded"); return render_template("index.html")
+    try:
+        data=file.read()
+        img=decode_image(data)
+    except:
+        flash("Corrupted codefile"); return render_template("index.html")
+    buf=BytesIO(); img.save(buf,format="PNG"); buf.seek(0)
+    return send_file(buf,mimetype="image/png",as_attachment=True,download_name="decoded.png")
 
-import os
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
-
+if __name__=="__main__":
+    port=int(os.environ.get("PORT",5000))
+    app.run(host="0.0.0.0",port=port)
